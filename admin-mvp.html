@@ -427,7 +427,7 @@ const RG = (function () {
   const events = () => _ev || (_ev = read(K.ev, []));
   const invalidate = () => { _ev = null; };
   events().forEach(e => LIVESET.add(e.playerId));
-  function pushEvent(ev){ LIVESET.add(ev.playerId); invalidate(); const a = events(); a.push(ev); if (a.length > 900) a.splice(0, a.length-900); write(K.ev, a); _ev = a; bump({t:'event', ev}); return ev; }
+  function pushEvent(ev){ LIVESET.add(ev.playerId); invalidate(); const a = events(); a.push(ev); if (a.length > 900){ /* trim emulator/synthetic events first so real game-client sessions never fall out of the window */ let drop = a.length-900; for (let i=0; i<a.length && drop>0;){ if (a[i].source !== 'client'){ a.splice(i,1); drop--; } else i++; } if (drop>0) a.splice(0, drop); } write(K.ev, a); _ev = a; bump({t:'event', ev}); return ev; }
   const evidence = () => read(K.log, []);
   function pushEvidence(e){ const a = evidence(); a.unshift(Object.assign({ id:'EV-'+String(a.length+1).padStart(4,'0'), ts:Date.now() }, e)); write(K.log, a); bump({t:'evidence'}); return a[0]; }
   const active = () => read(K.act, SEED[Math.floor(SEED.length*0.93)].id);
@@ -1069,9 +1069,12 @@ function evIndex(){
   RG.events().forEach(e=>{
     let o = m.get(e.playerId);
     if (!o) m.set(e.playerId, o = { first:e.timestamp, sessStart:e.timestamp, last:0, n:0, game:'', bet:0, spins:0 });
-    if (o.last && e.timestamp - o.last > 15*60*1000){ o.sessStart = e.timestamp; o.spins = 0; }
+    if (o.last && e.timestamp - o.last > 15*60*1000){ o.sessStart = e.timestamp; o.spins = 0; o.clientLast = 0; }
     o.last = e.timestamp; o.n++;
     if (e.source) o.src = e.source;
+    /* a real game-client session is sticky for the whole session: an emulator
+       event for the same account must not strip the badge */
+    if (e.source === 'client') o.clientLast = e.timestamp;
     if (e.type === 'spin'){ o.spins++; if (e.gameId) o.game = e.gameId; o.bet = e.bet;
       if (e.market !== undefined) o.market = e.market;
       if (e.live !== undefined) o.live = e.live; }
@@ -1384,8 +1387,8 @@ const PCOL = {
    instead of being crammed under the alias. */
 const firstSeen = id => { const o = evIndex().get(id); return o ? (o.sessStart || o.first) : 0; };
 const isNewArrival = id => { const f = firstSeen(id); return f && Date.now() - f < 4*60*1000; };
-const fromClient = id => { const o = evIndex().get(id); return !!o && o.src === 'client'; };
-const clientCount = () => { let n = 0; evIndex().forEach((o,id)=>{ if (o.src === 'client' && Date.now()-o.last < 6e5) n++; }); return n; };
+const fromClient = id => { const o = evIndex().get(id); return !!o && !!o.clientLast; };
+const clientCount = () => { let n = 0; evIndex().forEach((o,id)=>{ if (o.clientLast && Date.now()-o.clientLast < 6e5) n++; }); return n; };
 PCOL.who2 = ['Player', r=>'<div class="who"><b>'+plink(r.id)+
   (fromClient(r.id) ? ' <span class="pill p-ok" style="font-size:9.5px;padding:1px 6px" title="events arriving from the game client">game client</span>' : '') +
   (isNewArrival(r.id) ? ' <span class="pill p-info" style="font-size:9.5px;padding:1px 6px">new</span>' : '') +
@@ -3290,7 +3293,10 @@ function emuOpen(p){
 }
 function emuRotate(){
   const now = Date.now();
-  const pool = emuPool();
+  /* the game client owns its account: drop it from the emulator if it was
+     picked up earlier, and never pick it again while that session is live */
+  EM.live.forEach((st,id)=>{ if (fromClient(id)) EM.live.delete(id); });
+  const pool = emuPool().filter(p=>!fromClient(p.id));
   const ready = pool.filter(p=>!EM.live.has(p.id) &&
     !(EM.returns && EM.returns.has(p.id) && EM.returns.get(p.id) > now));
   /* Prefer accounts with no history in this session so the console keeps

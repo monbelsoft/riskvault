@@ -409,7 +409,7 @@ const RG = (function () {
   const events = () => _ev || (_ev = read(K.ev, []));
   const invalidate = () => { _ev = null; };
   events().forEach(e => LIVESET.add(e.playerId));
-  function pushEvent(ev){ LIVESET.add(ev.playerId); invalidate(); const a = events(); a.push(ev); if (a.length > 900) a.splice(0, a.length-900); write(K.ev, a); _ev = a; bump({t:'event', ev}); return ev; }
+  function pushEvent(ev){ LIVESET.add(ev.playerId); invalidate(); const a = events(); a.push(ev); if (a.length > 900){ /* trim emulator/synthetic events first so real game-client sessions never fall out of the window */ let drop = a.length-900; for (let i=0; i<a.length && drop>0;){ if (a[i].source !== 'client'){ a.splice(i,1); drop--; } else i++; } if (drop>0) a.splice(0, drop); } write(K.ev, a); _ev = a; bump({t:'event', ev}); return ev; }
   const evidence = () => read(K.log, []);
   function pushEvidence(e){ const a = evidence(); a.unshift(Object.assign({ id:'EV-'+String(a.length+1).padStart(4,'0'), ts:Date.now() }, e)); write(K.log, a); bump({t:'evidence'}); return a[0]; }
   const active = () => read(K.act, DEFAULT_ACTIVE());
